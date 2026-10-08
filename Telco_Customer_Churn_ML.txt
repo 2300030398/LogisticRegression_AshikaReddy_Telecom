@@ -1,0 +1,284 @@
+Telco Customer Churn Prediction using Logistic Regression
+
+Business Scenario
+------------------
+A telecom company is losing customers. Every customer who leaves means lost
+revenue, and winning a new customer costs more than keeping an old one.
+Management wants to find customers who are likely to leave, so that retention
+offers can be given before they go.
+
+Dataset: Telco Customer Churn (Kaggle, blastchar). It has about 7,043
+customers and 21 columns.
+
+NOTE: The numbers below marked "approx" come from my knowledge of this dataset
+and a typical 80:20 split. Run the code once and replace them with your real
+output.
+
+
+1. Load the dataset and understand the columns
+----------------------------------------------
+Python code:
+
+import pandas as pd
+
+df = pd.read_csv("WA_Fn-UseC_-Telco-Customer-Churn.csv")
+
+print(df.head())
+print(df.shape)
+df.info()
+print(df["Churn"].value_counts())
+
+What I found:
+- About 7,043 rows and 21 columns
+- Customer details: gender, SeniorCitizen, Partner, Dependents
+- Services: PhoneService, MultipleLines, InternetService, OnlineSecurity,
+  OnlineBackup, DeviceProtection, TechSupport, StreamingTV, StreamingMovies
+- Account details: tenure, Contract, PaperlessBilling, PaymentMethod,
+  MonthlyCharges, TotalCharges
+- Target: Churn (Yes / No)
+- About 26.5% of customers churned, so the data is imbalanced (more "No"
+  than "Yes")
+
+
+2. Clean the data
+-----------------
+TotalCharges is stored as text and has a few blank values (new customers with
+tenure = 0). customerID is only a label, so it is not useful for prediction.
+
+df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce")
+df["TotalCharges"] = df["TotalCharges"].fillna(0)
+df = df.drop(columns=["customerID"])
+df["Churn"] = df["Churn"].map({"No": 0, "Yes": 1})
+
+
+3. Choose relevant input features
+---------------------------------
+Features that are likely to influence churn:
+- tenure: new customers usually leave more often than long-term ones
+- Contract: month-to-month customers can leave easily
+- MonthlyCharges and TotalCharges: price sensitivity
+- InternetService, OnlineSecurity, TechSupport: service quality and support
+- PaymentMethod and PaperlessBilling: billing behaviour
+- SeniorCitizen, Partner, Dependents: customer profile
+
+I kept all columns except customerID and let the model decide their weights.
+Text columns are converted to numbers using one-hot encoding.
+
+X = pd.get_dummies(df.drop(columns=["Churn"]), drop_first=True)
+y = df["Churn"]
+
+
+4. Split the data (80:20)
+-------------------------
+from sklearn.model_selection import train_test_split
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+
+Training data: about 5,634 rows. Testing data: about 1,409 rows.
+stratify=y keeps the same churn percentage in both parts.
+
+
+5. Build the model that gives churn probability
+-----------------------------------------------
+I used Logistic Regression because the target has two classes (churn or stay)
+and the model gives a probability between 0 and 1 for each customer.
+
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+
+scaler = StandardScaler()
+X_train_s = scaler.fit_transform(X_train)
+X_test_s = scaler.transform(X_test)
+
+model = LogisticRegression(max_iter=1000)
+model.fit(X_train_s, y_train)
+
+prob = model.predict_proba(X_test_s)[:, 1]   # probability of churn
+
+
+6. Classify customers: Likely to churn / Likely to stay
+-------------------------------------------------------
+If the churn probability is 0.5 or more, the customer is "Likely to churn".
+Otherwise the customer is "Likely to stay".
+
+import numpy as np
+
+y_pred = (prob >= 0.5).astype(int)
+labels = np.where(y_pred == 1, "Likely to churn", "Likely to stay")
+
+result = pd.DataFrame({
+    "Churn Probability": prob.round(3),
+    "Actual": y_test.map({0: "Stay", 1: "Churn"}).values,
+    "Prediction": labels
+})
+print(result.head(10))
+
+
+7. Predict churn for unseen customer records
+--------------------------------------------
+The 1,409 test customers were never used for training, so the predictions
+above are on unseen records. A brand new customer can be scored the same way:
+
+new_customer = X_test.iloc[[0]]
+new_scaled = scaler.transform(new_customer)
+print(model.predict_proba(new_scaled)[0, 1])
+print(model.predict(new_scaled)[0])
+
+
+8. Evaluate the model
+---------------------
+from sklearn.metrics import (accuracy_score, precision_score, recall_score,
+                             f1_score, roc_auc_score, confusion_matrix)
+
+print("Accuracy :", accuracy_score(y_test, y_pred))
+print("Precision:", precision_score(y_test, y_pred))
+print("Recall   :", recall_score(y_test, y_pred))
+print("F1 Score :", f1_score(y_test, y_pred))
+print("ROC-AUC  :", roc_auc_score(y_test, prob))
+print(confusion_matrix(y_test, y_pred))
+
+Approximate results (random_state=42):
+Accuracy  : about 0.80
+Precision : about 0.66  (of customers flagged as churn, about 66% really left)
+Recall    : about 0.57  (of customers who really left, about 57% were caught)
+F1 Score  : about 0.61
+ROC-AUC   : about 0.84
+
+Accuracy alone can mislead here. About 73% of customers stay, so a lazy model
+that always says "stay" would already get about 73% accuracy and catch zero
+churners. That is why precision, recall and the confusion matrix matter more.
+
+
+9. Confusion matrix analysis
+----------------------------
+Approximate confusion matrix on the 1,409 test customers:
+
+                      Predicted Stay    Predicted Churn
+Actual Stay                925               110
+Actual Churn               160               214
+
+Q: How many churn customers were correctly identified?
+A: About 214 out of 374 real churners (True Positives). That is a recall of
+   about 57%.
+
+Q: How many non-churn customers were misclassified?
+A: About 110 loyal customers were wrongly flagged as churn (False Positives)
+   out of 1,035 loyal customers, which is about 11%.
+
+The model also missed about 160 real churners (False Negatives). These are the
+most costly mistakes.
+
+In code:
+tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+print("Churners correctly found:", tp)
+print("Loyal customers wrongly flagged:", fp)
+print("Churners missed:", fn)
+
+
+10. Business interpretation
+---------------------------
+Is it better to wrongly flag a loyal customer as churn?
+Or to miss a customer who is actually going to leave?
+
+For most telecom companies, missing a real churner is the more expensive
+mistake.
+- Wrongly flagging a loyal customer (False Positive): the company gives a
+  discount or offer that was not really needed. The cost is small and limited
+  to the offer.
+- Missing a churner (False Negative): the company loses the customer's
+  monthly revenue for months or years, and must also pay to acquire a
+  replacement customer.
+
+So the company should prefer to catch more churners, even if that means a few
+extra retention offers go to customers who would have stayed anyway. The
+balance depends on the offer cost compared with the customer's lifetime value.
+If offers are very expensive, the company should be more selective.
+
+
+11. One improvement to make the prediction more reliable
+--------------------------------------------------------
+Lower the decision threshold (for example from 0.5 to 0.3) or use
+class_weight="balanced" in Logistic Regression.
+
+Because only about 1 in 4 customers churns, the model tends to lean towards
+"stay" and misses churners. A lower threshold flags more at-risk customers, so
+recall goes up (more churners caught) while precision goes down a little.
+
+y_pred_new = (prob >= 0.3).astype(int)
+print(confusion_matrix(y_test, y_pred_new))
+print("Recall:", recall_score(y_test, y_pred_new))
+
+The best threshold should be chosen by comparing the cost of a retention offer
+with the revenue lost from a departing customer.
+
+
+12. Complete Python program
+---------------------------
+import pandas as pd
+import numpy as np
+
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (accuracy_score, precision_score, recall_score,
+                             f1_score, roc_auc_score, confusion_matrix)
+
+# Load and clean
+df = pd.read_csv("WA_Fn-UseC_-Telco-Customer-Churn.csv")
+df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce").fillna(0)
+df = df.drop(columns=["customerID"])
+df["Churn"] = df["Churn"].map({"No": 0, "Yes": 1})
+
+# Features and target
+X = pd.get_dummies(df.drop(columns=["Churn"]), drop_first=True)
+y = df["Churn"]
+
+# Split
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+
+# Scale and train
+scaler = StandardScaler()
+X_train_s = scaler.fit_transform(X_train)
+X_test_s = scaler.transform(X_test)
+
+model = LogisticRegression(max_iter=1000)
+model.fit(X_train_s, y_train)
+
+# Predict
+prob = model.predict_proba(X_test_s)[:, 1]
+y_pred = (prob >= 0.5).astype(int)
+
+# Evaluate
+print("Accuracy :", accuracy_score(y_test, y_pred))
+print("Precision:", precision_score(y_test, y_pred))
+print("Recall   :", recall_score(y_test, y_pred))
+print("F1 Score :", f1_score(y_test, y_pred))
+print("ROC-AUC  :", roc_auc_score(y_test, prob))
+
+cm = confusion_matrix(y_test, y_pred)
+tn, fp, fn, tp = cm.ravel()
+print(cm)
+print("Churners correctly found:", tp)
+print("Loyal customers wrongly flagged:", fp)
+print("Churners missed:", fn)
+
+# Improvement: lower threshold
+y_pred_new = (prob >= 0.3).astype(int)
+print("\nWith threshold 0.3")
+print(confusion_matrix(y_test, y_pred_new))
+print("Recall:", recall_score(y_test, y_pred_new))
+
+
+Final conclusion
+----------------
+A Logistic Regression model can estimate the probability that each customer
+will leave and split customers into "Likely to churn" and "Likely to stay".
+With an accuracy of about 80% and an ROC-AUC of about 0.84, it is a useful
+starting point. However, it catches only about 57% of real churners at the
+default 0.5 threshold. Since missing a churner costs more than giving an
+unneeded offer, the company should lower the threshold, then run a small
+retention campaign and track the results before rolling it out widely.
